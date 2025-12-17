@@ -1,0 +1,31 @@
+[package]
+name = "photodna-sys"
+version = "1.5.1"
+edition = "2021"
+authors = ["U.S. Internet Preservation Society"]
+description = "Low-level FFI bindings to the Microsoft PhotoDNA Edge Hash Generator library"
+documentation = "https://docs.rs/photodna-sys"
+readme = "README.md"
+repository = "https://github.com/usips/photodna-sys"
+license = "MIT"
+keywords = ["photodna", "hash", "image", "microsoft", "ffi"]
+categories = ["external-ffi-bindings", "multimedia::images"]
+# Note: We do not use `links` because PhotoDNA is loaded at runtime via dlopen/LoadLibrary
+
+[features]
+default = ["native"]
+# Link against native dynamic libraries (.dll/.so/.dylib)
+native = []
+# Embed the WebAssembly module for platforms without native library support
+wasm = []
+# Regenerate bindings from headers at build time (requires clang)
+bindgen = ["dep:bindgen"]
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }
+
+[package.metadata.docs.rs]
+features = ["native"]

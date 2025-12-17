@@ -1,0 +1,33 @@
+[package]
+name = "photodna"
+version = "1.5.1"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+description = "Safe, high-level Rust bindings for the Microsoft PhotoDNA Edge Hash Generator"
+repository = "https://github.com/your-org/photodna-rs"
+documentation = "https://docs.rs/photodna"
+readme = "README.md"
+keywords = [
+    "photodna",
+    "image-hashing",
+    "perceptual-hash",
+    "content-moderation",
+]
+categories = ["multimedia::images", "api-bindings"]
+exclude = ["/target"]
+
+[dependencies]
+photodna-sys = { path = "../photodna-sys", version = "1.5.1" }
+thiserror = "2"
+
+[dev-dependencies]
+# For running examples and tests with image loading
+# (not required for library consumers)
+
+[features]
+default = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
