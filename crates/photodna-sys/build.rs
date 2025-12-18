@@ -61,23 +61,33 @@ fn main() {
 
         // Native target without SDK - error
         (None, true, _) => {
-            panic!(
-                "photodna-sys: PHOTODNA_SDK_ROOT environment variable is not set.\n\n\
-                 This crate requires the proprietary Microsoft PhotoDNA SDK for native builds.\n\
-                 Please set PHOTODNA_SDK_ROOT to the root directory of the SDK.\n\n\
-                 Example:\n\
-                   export PHOTODNA_SDK_ROOT=/path/to/PhotoDNA.EdgeHashGeneration-1.05.001\n\n\
-                 Expected directory structure:\n\
-                   $PHOTODNA_SDK_ROOT/\n\
-                   ├── clientlibrary/\n\
-                   │   ├── libEdgeHashGenerator.so.{}\n\
-                   │   ├── c/\n\
-                   │   │   └── PhotoDnaEdgeHashGenerator.h\n\
-                   │   └── ...\n\
-                   └── webassembly/\n\
-                       └── photoDnaEdgeHash.wasm",
+            eprintln!(
+                "cargo:warning=photodna-sys: PHOTODNA_SDK_ROOT environment variable is not set.\n\
+                 cargo:warning=\n\
+                 cargo:warning=This crate requires the proprietary Microsoft PhotoDNA SDK for native builds.\n\
+                 cargo:warning=The code will compile but will fail at runtime if the SDK is not available.\n\
+                 cargo:warning=\n\
+                 cargo:warning=To use the SDK, set PHOTODNA_SDK_ROOT to the root directory of the SDK:\n\
+                 cargo:warning=  export PHOTODNA_SDK_ROOT=/path/to/PhotoDNA.EdgeHashGeneration-1.05.001\n\
+                 cargo:warning=\n\
+                 cargo:warning=Expected directory structure:\n\
+                 cargo:warning=  $PHOTODNA_SDK_ROOT/\n\
+                 cargo:warning=  ├── clientlibrary/\n\
+                 cargo:warning=  │   ├── libEdgeHashGenerator.so.{}\n\
+                 cargo:warning=  │   ├── c/\n\
+                 cargo:warning=  │   │   └── PhotoDnaEdgeHashGenerator.h\n\
+                 cargo:warning=  │   └── ...\n\
+                 cargo:warning=  └── webassembly/\n\
+                 cargo:warning=      └── photoDnaEdgeHash.wasm",
                 LIBRARY_VERSION
             );
+            
+            // Set a cfg flag to indicate SDK is missing
+            println!("cargo:rustc-cfg=photodna_no_sdk");
+            
+            // Export empty placeholders - code will need to handle this at runtime
+            println!("cargo:rustc-env=PHOTODNA_SDK_ROOT=");
+            println!("cargo:rustc-env=PHOTODNA_LIB_DIR=");
         }
 
         // BSD target with SDK - configure WASM

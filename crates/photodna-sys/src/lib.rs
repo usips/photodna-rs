@@ -87,7 +87,10 @@
 // FFI functions must match the C API signature exactly
 #![allow(clippy::too_many_arguments)]
 
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr};
+
+#[cfg(not(photodna_no_sdk))]
+use std::ffi::CString;
 
 // ============================================================================
 // Constants
@@ -107,12 +110,18 @@ pub const PHOTODNA_LIBRARY_VERSION: &str = "1.05";
 
 /// The SDK root path (set at compile time from PHOTODNA_SDK_ROOT environment variable).
 /// Only available on native platforms (Windows, Linux, macOS) with SDK configured at build time.
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    not(photodna_no_sdk)
+))]
 pub const PHOTODNA_SDK_ROOT: &str = env!("PHOTODNA_SDK_ROOT");
 
 /// The client library directory path.
 /// Only available on native platforms (Windows, Linux, macOS) with SDK configured at build time.
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    not(photodna_no_sdk)
+))]
 pub const PHOTODNA_LIB_DIR: &str = env!("PHOTODNA_LIB_DIR");
 
 // ============================================================================
@@ -446,105 +455,6 @@ pub type FnPhotoDnaEdgeHashSub = unsafe extern "C" fn(
 mod native {
     use super::*;
 
-    #[cfg(unix)]
-    use libc::{dlclose, dlopen, dlsym, RTLD_LAZY};
-
-    #[cfg(windows)]
-    use std::os::windows::ffi::OsStrExt;
-
-    /// Handle to a dynamically loaded library.
-    #[cfg(unix)]
-    pub type LibraryHandle = *mut c_void;
-
-    #[cfg(windows)]
-    pub type LibraryHandle = *mut c_void;
-
-    /// Loads a dynamic library from the given path.
-    ///
-    /// # Safety
-    ///
-    /// The path must point to a valid dynamic library.
-    #[cfg(unix)]
-    pub unsafe fn load_library(path: &str) -> Result<LibraryHandle, String> {
-        let c_path = CString::new(path).map_err(|e| e.to_string())?;
-        let handle = dlopen(c_path.as_ptr(), RTLD_LAZY);
-        if handle.is_null() {
-            Err(format!("Failed to load library: {}", path))
-        } else {
-            Ok(handle)
-        }
-    }
-
-    #[cfg(windows)]
-    pub unsafe fn load_library(path: &str) -> Result<LibraryHandle, String> {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-
-        extern "system" {
-            fn LoadLibraryW(lpFileName: *const u16) -> *mut c_void;
-        }
-
-        let wide: Vec<u16> = OsStr::new(path)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let handle = LoadLibraryW(wide.as_ptr());
-        if handle.is_null() {
-            Err(format!("Failed to load library: {}", path))
-        } else {
-            Ok(handle)
-        }
-    }
-
-    /// Gets a function pointer from a loaded library.
-    ///
-    /// # Safety
-    ///
-    /// The symbol name must be valid and the function signature must match.
-    #[cfg(unix)]
-    pub unsafe fn get_symbol<T>(handle: LibraryHandle, name: &str) -> Result<T, String> {
-        let c_name = CString::new(name).map_err(|e| e.to_string())?;
-        let sym = dlsym(handle, c_name.as_ptr());
-        if sym.is_null() {
-            Err(format!("Failed to find symbol: {}", name))
-        } else {
-            Ok(std::mem::transmute_copy(&sym))
-        }
-    }
-
-    #[cfg(windows)]
-    pub unsafe fn get_symbol<T>(handle: LibraryHandle, name: &str) -> Result<T, String> {
-        extern "system" {
-            fn GetProcAddress(hModule: *mut c_void, lpProcName: *const i8) -> *mut c_void;
-        }
-
-        let c_name = CString::new(name).map_err(|e| e.to_string())?;
-        let sym = GetProcAddress(handle, c_name.as_ptr());
-        if sym.is_null() {
-            Err(format!("Failed to find symbol: {}", name))
-        } else {
-            Ok(std::mem::transmute_copy(&sym))
-        }
-    }
-
-    /// Unloads a dynamic library.
-    ///
-    /// # Safety
-    ///
-    /// The handle must be valid and all references to library functions must be dropped.
-    #[cfg(unix)]
-    pub unsafe fn unload_library(handle: LibraryHandle) {
-        dlclose(handle);
-    }
-
-    #[cfg(windows)]
-    pub unsafe fn unload_library(handle: LibraryHandle) {
-        extern "system" {
-            fn FreeLibrary(hModule: *mut c_void) -> i32;
-        }
-        FreeLibrary(handle);
-    }
-
     /// Returns the platform-specific library filename.
     pub fn get_library_filename() -> String {
         #[cfg(target_os = "windows")]
@@ -628,33 +538,33 @@ pub use native::*;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub struct EdgeHashGenerator {
     /// Handle to the loaded dynamic library.
-    dll_handle: LibraryHandle,
+    _library: libloading::Library,
     /// Handle to the PhotoDNA library instance.
     library_instance: *mut c_void,
     /// Function pointer: EdgeHashGeneratorRelease
-    fn_release: FnEdgeHashGeneratorRelease,
+    fn_release: libloading::Symbol<'static, FnEdgeHashGeneratorRelease>,
     /// Function pointer: GetErrorNumber
-    fn_get_error_number: FnGetErrorNumber,
+    fn_get_error_number: libloading::Symbol<'static, FnGetErrorNumber>,
     /// Function pointer: GetErrorString
-    fn_get_error_string: FnGetErrorString,
+    fn_get_error_string: libloading::Symbol<'static, FnGetErrorString>,
     /// Function pointer: LibraryVersion
-    fn_library_version: FnLibraryVersion,
+    fn_library_version: libloading::Symbol<'static, FnLibraryVersion>,
     /// Function pointer: LibraryVersionMajor
-    fn_library_version_major: FnLibraryVersionMajor,
+    fn_library_version_major: libloading::Symbol<'static, FnLibraryVersionMajor>,
     /// Function pointer: LibraryVersionMinor
-    fn_library_version_minor: FnLibraryVersionMinor,
+    fn_library_version_minor: libloading::Symbol<'static, FnLibraryVersionMinor>,
     /// Function pointer: LibraryVersionPatch
-    fn_library_version_patch: FnLibraryVersionPatch,
+    fn_library_version_patch: libloading::Symbol<'static, FnLibraryVersionPatch>,
     /// Function pointer: LibraryVersionText
-    fn_library_version_text: FnLibraryVersionText,
+    fn_library_version_text: libloading::Symbol<'static, FnLibraryVersionText>,
     /// Function pointer: PhotoDnaEdgeHash
-    fn_photo_dna_edge_hash: FnPhotoDnaEdgeHash,
+    fn_photo_dna_edge_hash: libloading::Symbol<'static, FnPhotoDnaEdgeHash>,
     /// Function pointer: PhotoDnaEdgeHashBorder
-    fn_photo_dna_edge_hash_border: FnPhotoDnaEdgeHashBorder,
+    fn_photo_dna_edge_hash_border: libloading::Symbol<'static, FnPhotoDnaEdgeHashBorder>,
     /// Function pointer: PhotoDnaEdgeHashBorderSub
-    fn_photo_dna_edge_hash_border_sub: FnPhotoDnaEdgeHashBorderSub,
+    fn_photo_dna_edge_hash_border_sub: libloading::Symbol<'static, FnPhotoDnaEdgeHashBorderSub>,
     /// Function pointer: PhotoDnaEdgeHashSub
-    fn_photo_dna_edge_hash_sub: FnPhotoDnaEdgeHashSub,
+    fn_photo_dna_edge_hash_sub: libloading::Symbol<'static, FnPhotoDnaEdgeHashSub>,
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -681,63 +591,130 @@ impl EdgeHashGenerator {
     /// let lib = EdgeHashGenerator::new(Some("/path/to/libs"), 4)?;
     /// ```
     pub fn new(library_dir: Option<&str>, max_threads: i32) -> Result<Self, String> {
-        let lib_dir = library_dir.unwrap_or(PHOTODNA_LIB_DIR);
-        let lib_filename = get_library_filename();
-        let lib_path = format!("{}/{}", lib_dir, lib_filename);
+        #[cfg(photodna_no_sdk)]
+        {
+            let _ = (library_dir, max_threads); // Suppress unused warnings
+            Err(
+                "PhotoDNA SDK not available: PHOTODNA_SDK_ROOT was not set at build time. \
+                 Please rebuild with PHOTODNA_SDK_ROOT environment variable set to the SDK directory."
+                    .to_string(),
+            )
+        }
 
-        unsafe {
-            // Load the dynamic library
-            let dll_handle = load_library(&lib_path)?;
+        #[cfg(not(photodna_no_sdk))]
+        {
+            let lib_dir = library_dir.unwrap_or(PHOTODNA_LIB_DIR);
+            let lib_filename = get_library_filename();
+            let lib_path = format!("{}/{}", lib_dir, lib_filename);
 
-            // Get function pointers
-            let fn_init: FnEdgeHashGeneratorInit = get_symbol(dll_handle, "EdgeHashGeneratorInit")?;
-            let fn_release: FnEdgeHashGeneratorRelease =
-                get_symbol(dll_handle, "EdgeHashGeneratorRelease")?;
-            let fn_get_error_number: FnGetErrorNumber = get_symbol(dll_handle, "GetErrorNumber")?;
-            let fn_get_error_string: FnGetErrorString = get_symbol(dll_handle, "GetErrorString")?;
-            let fn_library_version: FnLibraryVersion = get_symbol(dll_handle, "LibraryVersion")?;
-            let fn_library_version_major: FnLibraryVersionMajor =
-                get_symbol(dll_handle, "LibraryVersionMajor")?;
-            let fn_library_version_minor: FnLibraryVersionMinor =
-                get_symbol(dll_handle, "LibraryVersionMinor")?;
-            let fn_library_version_patch: FnLibraryVersionPatch =
-                get_symbol(dll_handle, "LibraryVersionPatch")?;
-            let fn_library_version_text: FnLibraryVersionText =
-                get_symbol(dll_handle, "LibraryVersionText")?;
-            let fn_photo_dna_edge_hash: FnPhotoDnaEdgeHash =
-                get_symbol(dll_handle, "PhotoDnaEdgeHash")?;
-            let fn_photo_dna_edge_hash_border: FnPhotoDnaEdgeHashBorder =
-                get_symbol(dll_handle, "PhotoDnaEdgeHashBorder")?;
-            let fn_photo_dna_edge_hash_border_sub: FnPhotoDnaEdgeHashBorderSub =
-                get_symbol(dll_handle, "PhotoDnaEdgeHashBorderSub")?;
-            let fn_photo_dna_edge_hash_sub: FnPhotoDnaEdgeHashSub =
-                get_symbol(dll_handle, "PhotoDnaEdgeHashSub")?;
+            unsafe {
+                // Load the dynamic library using libloading
+                let library = libloading::Library::new(&lib_path)
+                    .map_err(|e| format!("Failed to load library '{}': {}", lib_path, e))?;
 
-            // Initialize the library
-            let c_lib_dir = CString::new(lib_dir).map_err(|e| e.to_string())?;
-            let library_instance = fn_init(c_lib_dir.as_ptr(), max_threads);
+                // Get function pointers using libloading
+                let fn_init: libloading::Symbol<FnEdgeHashGeneratorInit> = library
+                    .get(b"EdgeHashGeneratorInit\0")
+                    .map_err(|e| format!("Failed to find symbol 'EdgeHashGeneratorInit': {}", e))?;
+                let fn_release: libloading::Symbol<FnEdgeHashGeneratorRelease> = library
+                    .get(b"EdgeHashGeneratorRelease\0")
+                    .map_err(|e| {
+                        format!("Failed to find symbol 'EdgeHashGeneratorRelease': {}", e)
+                    })?;
+                let fn_get_error_number: libloading::Symbol<FnGetErrorNumber> = library
+                    .get(b"GetErrorNumber\0")
+                    .map_err(|e| format!("Failed to find symbol 'GetErrorNumber': {}", e))?;
+                let fn_get_error_string: libloading::Symbol<FnGetErrorString> = library
+                    .get(b"GetErrorString\0")
+                    .map_err(|e| format!("Failed to find symbol 'GetErrorString': {}", e))?;
+                let fn_library_version: libloading::Symbol<FnLibraryVersion> = library
+                    .get(b"LibraryVersion\0")
+                    .map_err(|e| format!("Failed to find symbol 'LibraryVersion': {}", e))?;
+                let fn_library_version_major: libloading::Symbol<FnLibraryVersionMajor> = library
+                    .get(b"LibraryVersionMajor\0")
+                    .map_err(|e| format!("Failed to find symbol 'LibraryVersionMajor': {}", e))?;
+                let fn_library_version_minor: libloading::Symbol<FnLibraryVersionMinor> = library
+                    .get(b"LibraryVersionMinor\0")
+                    .map_err(|e| format!("Failed to find symbol 'LibraryVersionMinor': {}", e))?;
+                let fn_library_version_patch: libloading::Symbol<FnLibraryVersionPatch> = library
+                    .get(b"LibraryVersionPatch\0")
+                    .map_err(|e| format!("Failed to find symbol 'LibraryVersionPatch': {}", e))?;
+                let fn_library_version_text: libloading::Symbol<FnLibraryVersionText> = library
+                    .get(b"LibraryVersionText\0")
+                    .map_err(|e| format!("Failed to find symbol 'LibraryVersionText': {}", e))?;
+                let fn_photo_dna_edge_hash: libloading::Symbol<FnPhotoDnaEdgeHash> = library
+                    .get(b"PhotoDnaEdgeHash\0")
+                    .map_err(|e| format!("Failed to find symbol 'PhotoDnaEdgeHash': {}", e))?;
+                let fn_photo_dna_edge_hash_border: libloading::Symbol<FnPhotoDnaEdgeHashBorder> =
+                    library.get(b"PhotoDnaEdgeHashBorder\0").map_err(|e| {
+                        format!("Failed to find symbol 'PhotoDnaEdgeHashBorder': {}", e)
+                    })?;
+                let fn_photo_dna_edge_hash_border_sub: libloading::Symbol<
+                    FnPhotoDnaEdgeHashBorderSub,
+                > = library
+                    .get(b"PhotoDnaEdgeHashBorderSub\0")
+                    .map_err(|e| {
+                        format!("Failed to find symbol 'PhotoDnaEdgeHashBorderSub': {}", e)
+                    })?;
+                let fn_photo_dna_edge_hash_sub: libloading::Symbol<FnPhotoDnaEdgeHashSub> =
+                    library.get(b"PhotoDnaEdgeHashSub\0").map_err(|e| {
+                        format!("Failed to find symbol 'PhotoDnaEdgeHashSub': {}", e)
+                    })?;
 
-            if library_instance.is_null() {
-                unload_library(dll_handle);
-                return Err("Failed to initialize PhotoDNA library".to_string());
+                // Initialize the library
+                let c_lib_dir = CString::new(lib_dir).map_err(|e| e.to_string())?;
+                let library_instance = fn_init(c_lib_dir.as_ptr(), max_threads);
+
+                if library_instance.is_null() {
+                    return Err("Failed to initialize PhotoDNA library".to_string());
+                }
+
+                // Convert symbols to 'static lifetime for storage
+                // This is safe because the library will remain loaded for the lifetime of Self
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_release = std::mem::transmute(fn_release);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_get_error_number = std::mem::transmute(fn_get_error_number);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_get_error_string = std::mem::transmute(fn_get_error_string);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_library_version = std::mem::transmute(fn_library_version);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_library_version_major = std::mem::transmute(fn_library_version_major);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_library_version_minor = std::mem::transmute(fn_library_version_minor);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_library_version_patch = std::mem::transmute(fn_library_version_patch);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_library_version_text = std::mem::transmute(fn_library_version_text);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_photo_dna_edge_hash = std::mem::transmute(fn_photo_dna_edge_hash);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_photo_dna_edge_hash_border =
+                    std::mem::transmute(fn_photo_dna_edge_hash_border);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_photo_dna_edge_hash_border_sub =
+                    std::mem::transmute(fn_photo_dna_edge_hash_border_sub);
+                #[allow(clippy::missing_transmute_annotations)]
+                let fn_photo_dna_edge_hash_sub = std::mem::transmute(fn_photo_dna_edge_hash_sub);
+
+                Ok(Self {
+                    _library: library,
+                    library_instance,
+                    fn_release,
+                    fn_get_error_number,
+                    fn_get_error_string,
+                    fn_library_version,
+                    fn_library_version_major,
+                    fn_library_version_minor,
+                    fn_library_version_patch,
+                    fn_library_version_text,
+                    fn_photo_dna_edge_hash,
+                    fn_photo_dna_edge_hash_border,
+                    fn_photo_dna_edge_hash_border_sub,
+                    fn_photo_dna_edge_hash_sub,
+                })
             }
-
-            Ok(Self {
-                dll_handle,
-                library_instance,
-                fn_release,
-                fn_get_error_number,
-                fn_get_error_string,
-                fn_library_version,
-                fn_library_version_major,
-                fn_library_version_minor,
-                fn_library_version_patch,
-                fn_library_version_text,
-                fn_photo_dna_edge_hash,
-                fn_photo_dna_edge_hash_border,
-                fn_photo_dna_edge_hash_border_sub,
-                fn_photo_dna_edge_hash_sub,
-            })
         }
     }
 
@@ -965,8 +942,7 @@ impl Drop for EdgeHashGenerator {
         unsafe {
             // Release the library instance
             (self.fn_release)(self.library_instance);
-            // Unload the dynamic library
-            unload_library(self.dll_handle);
+            // The library is automatically unloaded when _library is dropped
         }
     }
 }
@@ -1124,7 +1100,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(all(
+        any(target_os = "windows", target_os = "linux", target_os = "macos"),
+        not(photodna_no_sdk)
+    ))]
     fn test_sdk_paths() {
         // Verify SDK paths are set at compile time (only for native targets with SDK)
         assert!(!PHOTODNA_SDK_ROOT.is_empty());

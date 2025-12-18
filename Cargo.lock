@@ -141,7 +141,7 @@ name = "photodna-sys"
 version = "1.5.1"
 dependencies = [
  "bindgen",
- "libc",
+ "libloading",
 ]
 
 [[package]]
