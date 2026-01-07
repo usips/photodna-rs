@@ -15,16 +15,22 @@ fn main() {
     println!();
 
     // SDK paths only available on native targets where SDK was present at build time
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(all(
+        any(target_os = "windows", target_os = "linux", target_os = "macos"),
+        not(photodna_no_sdk)
+    ))]
     {
         println!("SDK Root: {}", PHOTODNA_SDK_ROOT);
         println!("Library Directory: {}", PHOTODNA_LIB_DIR);
         println!();
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[cfg(any(
+        not(any(target_os = "windows", target_os = "linux", target_os = "macos")),
+        photodna_no_sdk
+    ))]
     {
-        println!("SDK paths not available (BSD/WASM-only build)");
+        println!("SDK paths not available (build without SDK or BSD/WASM-only build)");
         println!();
     }
 
