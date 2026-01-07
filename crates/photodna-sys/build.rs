@@ -21,7 +21,16 @@ fn main() {
 
     // Re-run if environment changes
     println!("cargo:rerun-if-env-changed=PHOTODNA_SDK_ROOT");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // Skip SDK verification in docs.rs builds or when explicitly requested.
+    // This allows the crate to be published and documented without the proprietary SDK.
+    if env::var("DOCS_RS").is_ok() {
+        eprintln!("cargo:warning=Building for docs.rs - skipping SDK verification");
+        println!("cargo:rustc-cfg=photodna_no_sdk");
+        return;
+    }
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
