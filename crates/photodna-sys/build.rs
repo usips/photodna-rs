@@ -68,35 +68,15 @@ fn main() {
             generate_bindings(root);
         }
 
-        // Native target without SDK - error
+        // Native target without SDK - warn and set no_sdk cfg
+        // This allows the crate to compile (for publishing, docs, etc.)
+        // but the library will need the SDK at runtime
         (None, true, _) => {
             eprintln!(
-                "cargo:warning=photodna-sys: PHOTODNA_SDK_ROOT environment variable is not set.\n\
-                 cargo:warning=\n\
-                 cargo:warning=This crate requires the proprietary Microsoft PhotoDNA SDK for native builds.\n\
-                 cargo:warning=The code will compile but will fail at runtime if the SDK is not available.\n\
-                 cargo:warning=\n\
-                 cargo:warning=To use the SDK, set PHOTODNA_SDK_ROOT to the root directory of the SDK:\n\
-                 cargo:warning=  export PHOTODNA_SDK_ROOT=/path/to/PhotoDNA.EdgeHashGeneration-1.05.001\n\
-                 cargo:warning=\n\
-                 cargo:warning=Expected directory structure:\n\
-                 cargo:warning=  $PHOTODNA_SDK_ROOT/\n\
-                 cargo:warning=  ├── clientlibrary/\n\
-                 cargo:warning=  │   ├── libEdgeHashGenerator.so.{}\n\
-                 cargo:warning=  │   ├── c/\n\
-                 cargo:warning=  │   │   └── PhotoDnaEdgeHashGenerator.h\n\
-                 cargo:warning=  │   └── ...\n\
-                 cargo:warning=  └── webassembly/\n\
-                 cargo:warning=      └── photoDnaEdgeHash.wasm",
-                LIBRARY_VERSION
+                "cargo:warning=photodna-sys: PHOTODNA_SDK_ROOT not set. \
+                 The PhotoDNA SDK will need to be available at runtime."
             );
-            
-            // Set a cfg flag to indicate SDK is missing
             println!("cargo:rustc-cfg=photodna_no_sdk");
-            
-            // Export empty placeholders - code will need to handle this at runtime
-            println!("cargo:rustc-env=PHOTODNA_SDK_ROOT=");
-            println!("cargo:rustc-env=PHOTODNA_LIB_DIR=");
         }
 
         // BSD target with SDK - configure WASM
