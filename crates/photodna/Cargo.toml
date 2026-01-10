@@ -21,12 +21,20 @@ exclude = ["/target"]
 photodna-sys = { path = "../photodna-sys", version = "1.5.1" }
 thiserror = "2"
 
+# Optional dependencies for test utilities
+rand = { version = "0.8", optional = true }
+
 [dev-dependencies]
 # For running examples and tests with image loading
 # (not required for library consumers)
+proptest = "1.5"
+rand = "0.8"
 
 [features]
 default = []
+# Enables test utilities for downstream crates
+# Provides mock hashes, fixtures, and testing helpers
+test-utils = ["rand"]
 
 [package.metadata.docs.rs]
 all-features = true

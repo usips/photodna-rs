@@ -2,80 +2,149 @@
 //!
 //! Low-level, unsafe FFI bindings to the Microsoft PhotoDNA Edge Hash Generator library.
 //!
-//! This crate provides raw bindings to the proprietary Microsoft PhotoDNA library,
-//! which computes perceptual hashes of images for content identification purposes.
+//! ## Purpose
+//!
+//! This crate provides raw Rust bindings to the proprietary Microsoft PhotoDNA SDK,
+//! enabling computation of perceptual image hashes for content identification. PhotoDNA
+//! generates a compact 924-byte "fingerprint" that identifies visually similar images
+//! even after modifications like resizing, cropping, or format conversion.
+//!
+//! **Primary use cases:**
+//! - Content moderation and safety systems
+//! - Detection of known illegal content (CSAM, etc.)
+//! - Image deduplication at scale
+//! - Visual similarity search
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                      Your Application                           │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                              │
+//!                              ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                   photodna (safe wrapper)                       │
+//! │  Generator, Hash, PixelFormat, PhotoDnaError                    │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                              │
+//!                              ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                   photodna-sys (this crate)                     │
+//! │  EdgeHashGenerator, HashResult, constants, FFI types            │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                              │
+//!                    ┌─────────┴─────────┐
+//!                    ▼                   ▼
+//!     ┌──────────────────────┐  ┌─────────────────────┐
+//!     │ Native Library       │  │ WASM Module (BSD)   │
+//!     │ .dll / .so / .dylib  │  │ photoDnaEdgeHash    │
+//!     └──────────────────────┘  └─────────────────────┘
+//! ```
 //!
 //! ## Library Loading Model
 //!
-//! The PhotoDNA library is designed for **runtime dynamic loading** via `dlopen`/`LoadLibrary`,
+//! The PhotoDNA library uses **runtime dynamic loading** (`dlopen`/`LoadLibrary`),
 //! not compile-time linking. This crate provides:
 //!
-//! 1. Type definitions and constants compatible with the C API
-//! 2. Function pointer types for all library functions
-//! 3. The [`EdgeHashGenerator`] struct that handles library loading and provides safe function access
+//! | Component | Description |
+//! |-----------|-------------|
+//! | [`EdgeHashGenerator`] | Main wrapper that loads the library and exposes function access |
+//! | [`HashResult`] | C-compatible struct for border detection results |
+//! | `PhotoDnaOptions` | Bitmask flags for pixel format, hash format, and behavior |
+//! | `Fn*` types | Function pointer types matching the C API signatures |
 //!
 //! ## Requirements
 //!
-//! This crate requires the proprietary Microsoft PhotoDNA SDK. You must set the
-//! `PHOTODNA_SDK_ROOT` environment variable to point to the SDK installation directory
-//! before building.
+//! **This crate requires the proprietary Microsoft PhotoDNA SDK (not included).**
+//!
+//! Set `PHOTODNA_SDK_ROOT` environment variable before building:
 //!
 //! ```bash
 //! export PHOTODNA_SDK_ROOT=/path/to/PhotoDNA.EdgeHashGeneration-1.05.001
 //! ```
 //!
+//! Expected SDK directory structure:
+//! ```text
+//! $PHOTODNA_SDK_ROOT/
+//! ├── clientlibrary/
+//! │   ├── libEdgeHashGenerator.so.1.05          # Linux x86_64
+//! │   ├── libEdgeHashGenerator-arm64.so.1.05    # Linux ARM64
+//! │   ├── libEdgeHashGenerator.1.05.dll         # Windows x86_64
+//! │   └── c/PhotoDnaEdgeHashGenerator.h         # C header
+//! └── webassembly/photoDnaEdgeHash.wasm         # WASM for BSD
+//! ```
+//!
 //! ## Platform Support
 //!
-//! | Platform | Architecture | Support |
-//! |----------|--------------|---------|
-//! | Windows  | x86_64, x86, arm64 | Native library |
-//! | Linux    | x86_64, x86, arm64 | Native library |
-//! | macOS    | x86_64, arm64 | Native library |
-//! | BSD      | any | WebAssembly module (requires `wasm` feature) |
+//! | Platform | Architecture | Backend | Notes |
+//! |----------|--------------|---------|-------|
+//! | Windows  | x86_64, x86, ARM64 | Native `.dll` | Default |
+//! | Linux    | x86_64, x86, ARM64 | Native `.so` | Default |
+//! | macOS    | x86_64, ARM64 | Native `.so` | ARM64 via Rosetta or native |
+//! | OpenBSD/FreeBSD | any | WebAssembly | Requires `wasm` feature |
 //!
 //! ## Features
 //!
-//! - `native` (default): Enables runtime loading of native dynamic libraries (`.dll`/`.so`).
-//! - `wasm`: Embeds the WebAssembly module for platforms without native library support.
-//! - `bindgen`: Regenerates bindings from C headers at build time (requires clang).
+//! | Feature | Default | Description |
+//! |---------|---------|-------------|
+//! | `native` | ✓ | Runtime loading of native dynamic libraries |
+//! | `wasm` | | Embeds WebAssembly module for BSD platforms |
+//! | `bindgen` | | Regenerate bindings from C headers (requires clang) |
 //!
-//! ## Safety
+//! ## Safety Requirements
 //!
-//! All FFI functions in this crate are `unsafe`. Callers must ensure:
+//! All FFI functions are `unsafe`. Callers **must** ensure:
 //!
-//! - The library has been properly initialized via [`EdgeHashGenerator::new`].
-//! - All pointers passed to functions are valid and point to sufficient memory.
-//! - Image data buffers match the specified dimensions, stride, and pixel format.
-//! - The library instance is not used after being dropped.
+//! 1. Library is initialized via [`EdgeHashGenerator::new`] before any calls
+//! 2. All pointers point to valid, sufficiently-sized memory
+//! 3. Image buffers match specified dimensions: `height * stride` bytes minimum
+//! 4. Stride is 0 (auto-calculate) or `>= width * bytes_per_pixel`
+//! 5. The `EdgeHashGenerator` instance outlives all operations using it
+//!
+//! ## Error Codes
+//!
+//! | Code | Constant | Meaning |
+//! |------|----------|---------|
+//! | -7000 | `PhotoDna_ErrorUnknown` | Undetermined internal error |
+//! | -7001 | `PhotoDna_ErrorMemoryAllocationFailed` | Memory allocation failed |
+//! | -7006 | `PhotoDna_ErrorImageTooSmall` | Image dimension < 50 pixels |
+//! | -7009 | `PhotoDna_ErrorImageIsFlat` | Insufficient gradients in image |
+//! | -7012 | `PhotoDna_ErrorInvalidStride` | Invalid stride value |
+//!
+//! See individual constant documentation for the complete list.
 //!
 //! ## Example
 //!
 //! ```rust,ignore
 //! use photodna_sys::*;
 //!
-//! // Initialize the library
-//! let lib = EdgeHashGenerator::new(None, 4)?; // Use default path, 4 threads
+//! // Initialize (loads native library, allocates thread pool)
+//! let lib = EdgeHashGenerator::new(None, 4)?; // 4 concurrent threads max
 //!
-//! // Prepare image data (RGB format)
-//! let image_data: &[u8] = /* your image pixels */;
-//! let width = 100;
-//! let height = 100;
+//! // Prepare image: RGB format, 640x480, tightly packed rows
+//! let width = 640;
+//! let height = 480;
+//! let image_data: Vec<u8> = vec![0u8; width * height * 3];
 //!
-//! // Compute the hash
+//! // Compute hash
 //! let mut hash = [0u8; PHOTODNA_HASH_SIZE_MAX];
-//! unsafe {
-//!     let result = lib.photo_dna_edge_hash(
+//! let result = unsafe {
+//!     lib.photo_dna_edge_hash(
 //!         image_data.as_ptr(),
 //!         hash.as_mut_ptr(),
-//!         width,
-//!         height,
-//!         0, // auto-calculate stride
-//!         PhotoDna_Default,
-//!     );
-//!     
-//!     if result < 0 {
-//!         eprintln!("Error: {}", error_code_description(result));
-//!     }
+//!         width as i32,
+//!         height as i32,
+//!         0,              // stride=0 means auto-calculate
+//!         PhotoDna_Rgb | PhotoDna_HashFormatEdgeV2,
+//!     )
+//! };
+//!
+//! match result {
+//!     r if r >= 0 => println!("Hash computed: {} bytes", PHOTODNA_HASH_SIZE_EDGE_V2),
+//!     PhotoDna_ErrorImageTooSmall => eprintln!("Image must be >= 50x50 pixels"),
+//!     PhotoDna_ErrorImageIsFlat => eprintln!("Image lacks sufficient gradients"),
+//!     code => eprintln!("Error: {}", error_code_description(code)),
 //! }
 //! ```
 
@@ -573,7 +642,7 @@ impl EdgeHashGenerator {
     ///
     /// # Parameters
     ///
-    /// - `library_dir`: Directory containing the library. If `None`, uses [`PHOTODNA_LIB_DIR`].
+    /// - `library_dir`: Directory containing the library. If `None`, uses the path from `PHOTODNA_LIB_DIR`.
     /// - `max_threads`: Maximum number of concurrent threads. Calls exceeding this
     ///   will block until a previous call completes.
     ///

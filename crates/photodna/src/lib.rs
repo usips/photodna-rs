@@ -2,59 +2,138 @@
 //!
 //! Safe, high-level Rust bindings for the Microsoft PhotoDNA Edge Hash Generator.
 //!
-//! PhotoDNA is a perceptual hashing technology that creates a compact "fingerprint"
-//! of an image, which can be used to identify visually similar images even after
-//! modifications like resizing, cropping, or format conversion.
+//! ## Overview
+//!
+//! PhotoDNA is a perceptual hashing technology that creates a compact 924-byte
+//! "fingerprint" of an image. This fingerprint identifies visually similar images
+//! even after modifications like resizing, cropping, color adjustment, or format
+//! conversion. It is widely used in content moderation and safety systems.
+//!
+//! ## Key Types
+//!
+//! | Type | Purpose |
+//! |------|---------|
+//! | [`Generator`] | Loads the PhotoDNA library and computes hashes |
+//! | [`Hash`][struct@Hash] | 924-byte perceptual hash with zero-copy semantics |
+//! | [`PixelFormat`] | Specifies input image pixel layout (RGB, RGBA, etc.) |
+//! | [`PhotoDnaError`] | Comprehensive typed error handling |
+//! | [`HashOptions`] | Fine-grained control over hash computation |
 //!
 //! ## Features
 //!
-//! - **Safe API**: All unsafe FFI operations are encapsulated behind a safe interface.
-//! - **Zero-Copy Hashes**: The `Hash` type uses a fixed-size stack array (no heap allocation).
-//! - **Typed Errors**: Comprehensive error handling via [`PhotoDnaError`].
-//! - **Platform Agnostic**: Works on Windows, Linux, macOS (via native libraries) or other
-//!   platforms (via WebAssembly runtime, handled by `photodna-sys`).
+//! - **Safe API**: All unsafe FFI operations encapsulated behind safe interface
+//! - **Zero-Copy Hashes**: `Hash` uses fixed-size stack array (no heap allocation)
+//! - **Typed Errors**: Every failure mode has a specific error variant
+//! - **Builder Pattern**: Ergonomic configuration via `GeneratorOptions` and `HashOptions`
+//! - **Test Utilities**: Mock hashes and fixtures for testing (via `test-utils` feature)
 //!
 //! ## Requirements
 //!
-//! This crate requires the proprietary Microsoft PhotoDNA SDK. Before building,
-//! you must set the `PHOTODNA_SDK_ROOT` environment variable to point to the SDK
-//! installation directory. See the `photodna-sys` crate documentation for details.
+//! **This crate requires the proprietary Microsoft PhotoDNA SDK (not included).**
+//!
+//! Set `PHOTODNA_SDK_ROOT` before building:
+//!
+//! ```bash
+//! export PHOTODNA_SDK_ROOT=/path/to/PhotoDNA.EdgeHashGeneration-1.05.001
+//! cargo build
+//! ```
+//!
+//! See [`photodna-sys`](https://docs.rs/photodna-sys) for detailed SDK setup.
 //!
 //! ## Quick Start
 //!
 //! ```rust,ignore
-//! use photodna::{Generator, GeneratorOptions, PixelFormat, Hash, Result};
+//! use photodna::{Generator, GeneratorOptions, Hash, Result};
 //!
 //! fn main() -> Result<()> {
-//!     // Initialize the generator (loads the PhotoDNA library)
+//!     // Initialize the generator (loads PhotoDNA library)
 //!     let generator = Generator::new(GeneratorOptions::default())?;
 //!
-//!     // Load your image as raw RGB pixels
-//!     let image_data: &[u8] = &[/* RGB pixel data */];
-//!     let width = 100;
-//!     let height = 100;
+//!     // Load image as raw RGB pixels (use `image` crate, etc.)
+//!     let image_data: Vec<u8> = load_rgb_image("photo.jpg");
+//!     let (width, height) = (640, 480);
 //!
 //!     // Compute the hash
-//!     let hash: Hash = generator.compute_hash_rgb(image_data, width, height)?;
+//!     let hash: Hash = generator.compute_hash_rgb(&image_data, width, height)?;
 //!
-//!     // Use the hash (e.g., store in database)
+//!     // Store or compare the hash
 //!     println!("Hash: {}", hash.to_hex());
-//!
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Image Data Requirements
+//! ## Image Requirements
 //!
-//! - Minimum image size: 50x50 pixels
-//! - Supported pixel formats: RGB, RGBA, BGRA, ARGB, Grayscale, YCbCr, YUV420P
-//! - Images with few gradients ("flat" images) may fail to hash
+//! | Requirement | Value |
+//! |-------------|-------|
+//! | Minimum size | 50×50 pixels |
+//! | Supported formats | RGB, RGBA, BGRA, ARGB, ABGR, CMYK, Gray8, Gray32, YCbCr, YUV420P |
+//! | Content | Must have sufficient gradients (flat/solid images will fail) |
+//!
+//! ## Pixel Format Selection
+//!
+//! ```rust,ignore
+//! use photodna::{Generator, GeneratorOptions, HashOptions, PixelFormat};
+//!
+//! let generator = Generator::new(GeneratorOptions::default())?;
+//!
+//! // For BGRA images (common in Windows/OpenCV)
+//! let options = HashOptions::new().pixel_format(PixelFormat::Bgra);
+//! let hash = generator.compute_hash(&bgra_data, 640, 480, options)?;
+//! ```
+//!
+//! ## Border Detection
+//!
+//! PhotoDNA can detect and remove borders from images:
+//!
+//! ```rust,ignore
+//! let result = generator.compute_hash_with_border_detection(&data, 640, 480, options)?;
+//!
+//! println!("Original hash: {}", result.primary);
+//! if let Some(borderless) = result.borderless {
+//!     println!("Without border: {}", borderless);
+//!     println!("Content region: {:?}", result.content_region);
+//! }
+//! ```
 //!
 //! ## Thread Safety
 //!
-//! The [`Generator`] can be used from multiple threads if the underlying library
-//! supports it. The `max_threads` option controls the maximum concurrent hash
-//! operations. Calls exceeding this limit will block until a slot is available.
+//! [`Generator`] is `Send` but not `Sync`. For concurrent access:
+//!
+//! - Create one `Generator` per thread (recommended), or
+//! - Wrap in `Arc<Mutex<Generator>>` for shared access
+//!
+//! The `max_threads` option controls the underlying library's thread pool.
+//! Operations exceeding this limit will block until a slot becomes available.
+//!
+//! ## Test Utilities
+//!
+//! For testing without the PhotoDNA SDK:
+//!
+//! ```toml
+//! [dev-dependencies]
+//! photodna = { version = "1.5", features = ["test-utils"] }
+//! ```
+//!
+//! ```rust,ignore
+//! use photodna::test_utils::{MockHashBuilder, fixtures};
+//!
+//! let hash = MockHashBuilder::new().with_seed(42).build();
+//! let sample = fixtures::sample_hash_a();
+//! ```
+//!
+//! ## Error Handling
+//!
+//! All operations return [`Result<T, PhotoDnaError>`]:
+//!
+//! ```rust,ignore
+//! match generator.compute_hash_rgb(&data, width, height) {
+//!     Ok(hash) => println!("Success: {}", hash),
+//!     Err(PhotoDnaError::ImageTooSmall) => eprintln!("Image must be >= 50x50"),
+//!     Err(PhotoDnaError::ImageIsFlat) => eprintln!("Image needs more contrast"),
+//!     Err(e) => eprintln!("Error: {}", e),
+//! }
+//! ```
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
@@ -62,6 +141,11 @@
 
 mod error;
 mod hash;
+
+// Test utilities module (available with `test-utils` feature or in tests)
+#[cfg(any(test, feature = "test-utils"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-utils")))]
+pub mod test_utils;
 
 pub use error::{PhotoDnaError, Result};
 pub use hash::{Hash, HASH_SIZE, HASH_SIZE_MAX};
