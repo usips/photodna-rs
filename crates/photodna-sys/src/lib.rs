@@ -92,6 +92,52 @@
 //! | `wasm` | | Embeds WebAssembly module for BSD platforms |
 //! | `bindgen` | | Regenerate bindings from C headers (requires clang) |
 //!
+//! ## Memory Ownership Model
+//!
+//! Understanding memory ownership is critical for safe FFI usage.
+//!
+//! ### Buffer Ownership Table
+//!
+//! | Buffer | Rust Side | C Side | Lifetime |
+//! |--------|-----------|--------|----------|
+//! | `image_data` | Caller owns | Borrowed (read-only) | Duration of FFI call |
+//! | `hash_value` | Caller owns | Borrowed (write) | Duration of FFI call |
+//! | `hash_results` | Caller owns | Borrowed (write) | Duration of FFI call |
+//! | `library_instance` | `EdgeHashGenerator` | Owned by library | Until `drop()` called |
+//!
+//! ### Library Instance Lifecycle
+//!
+//! ```text
+//! EdgeHashGenerator::new()
+//!        │
+//!        ▼
+//! ┌──────────────────────────────────────────────────────────────────┐
+//! │ 1. Load dynamic library via libloading                          │
+//! │ 2. Resolve all function pointers from symbol table              │
+//! │ 3. Call EdgeHashGeneratorInit() → returns library_instance      │
+//! │ 4. Store library + instance + function pointers in struct       │
+//! └──────────────────────────────────────────────────────────────────┘
+//!        │
+//!        ▼
+//!    Normal usage: photo_dna_edge_hash(), etc.
+//!        │
+//!        ▼
+//! ┌──────────────────────────────────────────────────────────────────┐
+//! │ Drop::drop()                                                     │
+//! │ 1. Call EdgeHashGeneratorRelease(library_instance)               │
+//! │ 2. libloading::Library dropped → unloads dynamic library         │
+//! └──────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ### Function Pointer Safety
+//!
+//! All function pointers are transmuted to `'static` lifetime after loading.
+//! This is safe because:
+//!
+//! 1. The `Library` handle is stored alongside the function pointers
+//! 2. `Library::drop()` is only called after `EdgeHashGenerator::drop()`
+//! 3. No function pointer can outlive the library handle
+//!
 //! ## Safety Requirements
 //!
 //! All FFI functions are `unsafe`. Callers **must** ensure:
@@ -101,6 +147,14 @@
 //! 3. Image buffers match specified dimensions: `height * stride` bytes minimum
 //! 4. Stride is 0 (auto-calculate) or `>= width * bytes_per_pixel`
 //! 5. The `EdgeHashGenerator` instance outlives all operations using it
+//!
+//! ### Buffer Size Requirements
+//!
+//! | Parameter | Minimum Size |
+//! |-----------|--------------|
+//! | `image_data` | `height * stride` bytes (stride=0 means `width * bpp`) |
+//! | `hash_value` | [`PHOTODNA_HASH_SIZE_MAX`] (1232) bytes |
+//! | `hash_results` | `max_hash_count * sizeof(HashResult)` bytes |
 //!
 //! ## Error Codes
 //!
@@ -677,17 +731,19 @@ impl EdgeHashGenerator {
             let lib_path = format!("{}/{}", lib_dir, lib_filename);
 
             unsafe {
-                // Load the dynamic library using libloading
+                // SAFETY: Library loading via libloading. The library path has been
+                // validated at build time (PHOTODNA_LIB_DIR from build.rs).
                 let library = libloading::Library::new(&lib_path)
                     .map_err(|e| format!("Failed to load library '{}': {}", lib_path, e))?;
 
-                // Get function pointers using libloading
+                // SAFETY: Symbol resolution from the loaded library. All symbols are
+                // required to exist in the PhotoDNA library per the SDK documentation.
+                // The function pointer types match the C header definitions exactly.
                 let fn_init: libloading::Symbol<FnEdgeHashGeneratorInit> = library
                     .get(b"EdgeHashGeneratorInit\0")
                     .map_err(|e| format!("Failed to find symbol 'EdgeHashGeneratorInit': {}", e))?;
-                let fn_release: libloading::Symbol<FnEdgeHashGeneratorRelease> = library
-                    .get(b"EdgeHashGeneratorRelease\0")
-                    .map_err(|e| {
+                let fn_release: libloading::Symbol<FnEdgeHashGeneratorRelease> =
+                    library.get(b"EdgeHashGeneratorRelease\0").map_err(|e| {
                         format!("Failed to find symbol 'EdgeHashGeneratorRelease': {}", e)
                     })?;
                 let fn_get_error_number: libloading::Symbol<FnGetErrorNumber> = library
@@ -720,17 +776,17 @@ impl EdgeHashGenerator {
                     })?;
                 let fn_photo_dna_edge_hash_border_sub: libloading::Symbol<
                     FnPhotoDnaEdgeHashBorderSub,
-                > = library
-                    .get(b"PhotoDnaEdgeHashBorderSub\0")
-                    .map_err(|e| {
-                        format!("Failed to find symbol 'PhotoDnaEdgeHashBorderSub': {}", e)
-                    })?;
-                let fn_photo_dna_edge_hash_sub: libloading::Symbol<FnPhotoDnaEdgeHashSub> =
-                    library.get(b"PhotoDnaEdgeHashSub\0").map_err(|e| {
-                        format!("Failed to find symbol 'PhotoDnaEdgeHashSub': {}", e)
-                    })?;
+                > = library.get(b"PhotoDnaEdgeHashBorderSub\0").map_err(|e| {
+                    format!("Failed to find symbol 'PhotoDnaEdgeHashBorderSub': {}", e)
+                })?;
+                let fn_photo_dna_edge_hash_sub: libloading::Symbol<FnPhotoDnaEdgeHashSub> = library
+                    .get(b"PhotoDnaEdgeHashSub\0")
+                    .map_err(|e| format!("Failed to find symbol 'PhotoDnaEdgeHashSub': {}", e))?;
 
-                // Initialize the library
+                // SAFETY: Calling into C library's init function.
+                // - c_lib_dir is a valid null-terminated C string
+                // - max_threads is a primitive i32 value
+                // - The library code is trusted (proprietary Microsoft code)
                 let c_lib_dir = CString::new(lib_dir).map_err(|e| e.to_string())?;
                 let library_instance = fn_init(c_lib_dir.as_ptr(), max_threads);
 
@@ -738,8 +794,17 @@ impl EdgeHashGenerator {
                     return Err("Failed to initialize PhotoDNA library".to_string());
                 }
 
-                // Convert symbols to 'static lifetime for storage
-                // This is safe because the library will remain loaded for the lifetime of Self
+                // SAFETY: Transmuting Symbol<'a> to Symbol<'static>.
+                //
+                // This is safe because:
+                // 1. The `_library` field keeps the library loaded
+                // 2. `_library` is dropped AFTER all function pointers (Rust drop order)
+                // 3. No function pointer can outlive the library handle
+                // 4. The struct has no way to expose function pointers without `&self`
+                //
+                // The 'static lifetime is a lie to the type system, but the actual
+                // lifetime is tied to `self`. This pattern is documented in the
+                // libloading crate documentation.
                 #[allow(clippy::missing_transmute_annotations)]
                 let fn_release = std::mem::transmute(fn_release);
                 #[allow(clippy::missing_transmute_annotations)]
@@ -867,8 +932,17 @@ impl EdgeHashGenerator {
     ///
     /// # Safety
     ///
-    /// - `image_data` must point to valid pixel data of size `height * stride` bytes.
-    /// - `hash_value` must point to a buffer of at least `PHOTODNA_HASH_SIZE_MAX` bytes.
+    /// Callers must uphold the following invariants:
+    ///
+    /// - `image_data` must point to valid, readable memory of at least
+    ///   `height * effective_stride` bytes, where `effective_stride` is
+    ///   `stride` if non-zero, or `width * bytes_per_pixel` otherwise.
+    /// - `hash_value` must point to valid, writable memory of at least
+    ///   [`PHOTODNA_HASH_SIZE_MAX`] (1232) bytes.
+    /// - `width` and `height` must each be >= 50.
+    /// - The `self` reference must be valid (library initialized).
+    ///
+    /// The library does not retain any pointers after the call returns.
     pub unsafe fn photo_dna_edge_hash(
         &self,
         image_data: *const u8,
@@ -878,15 +952,19 @@ impl EdgeHashGenerator {
         stride: i32,
         options: PhotoDnaOptions,
     ) -> i32 {
-        (self.fn_photo_dna_edge_hash)(
-            self.library_instance,
-            image_data,
-            hash_value,
-            width,
-            height,
-            stride,
-            options,
-        )
+        // SAFETY: Caller guarantees buffer validity per doc contract above.
+        // library_instance is valid because we're in &self method.
+        unsafe {
+            (self.fn_photo_dna_edge_hash)(
+                self.library_instance,
+                image_data,
+                hash_value,
+                width,
+                height,
+                stride,
+                options,
+            )
+        }
     }
 
     /// Computes the PhotoDNA Edge Hash with border detection.

@@ -1,6 +1,4 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/photodna-sys",
-    "crates/photodna",
-]
+members = ["crates/photodna-sys", "crates/photodna"]
+exclude = ["crates/photodna/fuzz"]

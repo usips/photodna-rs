@@ -1,0 +1,40 @@
+[package]
+name = "photodna-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.photodna]
+path = ".."
+features = ["test-utils"]
+
+# Fuzz targets for hash parsing
+[[bin]]
+name = "fuzz_hash_from_hex"
+path = "fuzz_targets/fuzz_hash_from_hex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hash_from_slice"
+path = "fuzz_targets/fuzz_hash_from_slice.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hash_roundtrip"
+path = "fuzz_targets/fuzz_hash_roundtrip.rs"
+test = false
+doc = false
+bench = false
